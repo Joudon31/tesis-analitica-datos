@@ -24,9 +24,9 @@ jobs:
 
       # Crear archivo gcp-key.json desde el secreto
       #printf "%s" NO modifica saltos de línea ni espacios → escribe el JSON EXACTO.
-      - name: Create GCP credentials file
+      - name: Create GCP credentials file from Base64
         run: |
-          printf "%s" "${{ secrets.GCP_KEY }}" > gcp-key.json
+          echo "${{ secrets.GCP_KEY }}" | base64 --decode > gcp-key.json
 
       #Vamos a decirle a Python que agregue la raíz del proyecto al PYTHONPATH.
       - name: Add project to PYTHONPATH
