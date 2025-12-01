@@ -27,6 +27,11 @@ jobs:
         run: |
           echo "${{ secrets.GCP_KEY }}" > gcp-key.json
 
+      #Vamos a decirle a Python que agregue la raíz del proyecto al PYTHONPATH.
+      - name: Add project to PYTHONPATH
+        run: |
+          echo "PYTHONPATH=$PYTHONPATH:$(pwd)" >> $GITHUB_ENV
+      
       # Ejecutar extractor en modo cloud
       - name: Run cloud extractor
         env:
