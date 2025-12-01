@@ -1,31 +1,42 @@
-name: Extract datasets
+name: Extract and Upload to GCP
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * *"   # todos los días a las 03:00 UTC
 
 jobs:
   extract:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           pip install -r requirements.txt
 
-      - name: Run extractor
+      # Crear archivo gcp-key.json desde el secreto
+      - name: Create GCP credentials file
         run: |
+          echo "${{ secrets.GCP_KEY }}" > gcp-key.json
+
+      # Ejecutar extractor en modo cloud
+      - name: Run cloud extractor
+        env:
+          MODE: cloud
+        run: |
+          sed -i 's/mode: local/mode: cloud/' config.yaml
           python src/extract/fetch_datasets.py
 
-      - name: Upload raw data
+      - name: Upload raw artifacts as backup
         uses: actions/upload-artifact@v4
         with:
-          name: raw-data
+          name: raw-data-backup
           path: data/raw/
