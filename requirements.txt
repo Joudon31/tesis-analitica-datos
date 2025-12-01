@@ -1,0 +1,8 @@
+pandas
+requests
+duckdb
+pyarrow
+streamlit
+python-dotenv
+google-cloud-storage
+pyyaml

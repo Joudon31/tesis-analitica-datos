@@ -1,0 +1,6 @@
+mode: cloud #local   # local o cloud dependiendo del entorno en el q querramos trabajar 
+
+gcp:
+  bucket_raw: "tesis-raw-datos-joseph"
+  bucket_processed: "tesis-processed-datos-joseph"
+  credentials: "gcp-key.json"

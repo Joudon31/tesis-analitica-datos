@@ -1,0 +1,31 @@
+name: Extract datasets
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run extractor
+        run: |
+          python src/extract/fetch_datasets.py
+
+      - name: Upload raw data
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-data
+          path: data/raw/
