@@ -30,7 +30,6 @@ def normalize_columns(df):
 
 
 def generate_unique_id(row):
-    """Crear hash único por fila."""
     raw = "|".join(map(str, row.values))
     return hashlib.md5(raw.encode()).hexdigest()
 
@@ -45,7 +44,6 @@ def upload_to_bucket(local_path, dest_name):
 
 
 def load_file(path):
-    """Carga archivos dinámicamente según su extensión."""
     ext = path.split(".")[-1].lower()
 
     if ext == "csv":
@@ -57,6 +55,16 @@ def load_file(path):
     if ext == "json":
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             data = json.load(f)
+
+        # Caso: USGS con "features"
+        if isinstance(data, dict) and "features" in data:
+            return pd.json_normalize(data["features"])
+
+        # Caso: JSON es lista (API sismos EC)
+        if isinstance(data, list):
+            return pd.json_normalize(data)
+
+        # Caso: JSON es dict normal
         return pd.json_normalize(data)
 
     print(f"[WARN] Formato no soportado: {path}")
@@ -64,16 +72,13 @@ def load_file(path):
 
 
 def download_all_raw_from_bucket():
-    """Descarga TODOS los archivos del bucket RAW hacia data/raw."""
     bucket_name = config["gcp"]["bucket_raw"]
     client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
     bucket = client.bucket(bucket_name)
 
     print(f"[INFO] Descargando archivos RAW desde GCP bucket: {bucket_name}")
 
-    blobs = bucket.list_blobs()
-
-    for blob in blobs:
+    for blob in bucket.list_blobs():
         dest_path = os.path.join(RAW_DIR, blob.name)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         blob.download_to_filename(dest_path)
@@ -86,7 +91,6 @@ def download_all_raw_from_bucket():
 def main():
     print("\n========== INICIANDO TRANSFORMACIÓN ==========\n")
     
-    # Descargar archivos RAW desde GCP al entorno local (GitHub Actions)
     download_all_raw_from_bucket()
 
     print("\n[INFO] Archivos disponibles en data/raw/:")
@@ -98,42 +102,31 @@ def main():
 
         df = load_file(raw_path)
 
-        # Caso especial: API USGS produce JSON con lista interna "features"
-        if filename.startswith("api_sismos_usgs"):
-            try:
-                with open(raw_path, "r", encoding="utf-8") as f:
-                    raw_json = json.load(f)
-                if "features" in raw_json:
-                    df = pd.json_normalize(raw_json["features"])
-                    print("[INFO] JSON USGS normalizado correctamente.")
-            except:
-                print("[ERROR] No se pudo normalizar USGS, saltando archivo.")
-                continue
-
         if df is None:
             print(f"[SKIP] No se pudo procesar: {filename}")
             continue
 
-        # NORMALIZACIÓN DE COLUMNAS
+        # Normalizar nombres columnas
         df = normalize_columns(df)
 
-        # Convertir listas o diccionarios a cadenas ANTES de eliminar duplicados
+        # Convertir listas/dict → cadenas en TODAS las columnas
         for col in df.columns:
             df[col] = df[col].apply(
-                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x
+                lambda x: json.dumps(x, ensure_ascii=False)
+                if isinstance(x, (list, dict))
+                else x
             )
 
-        # LIMPIEZA
+        # Limpieza
         df.drop_duplicates(inplace=True)
         df.dropna(how="all", axis=1, inplace=True)
 
-        # AGREGAR CAMPOS INTERNOS
+        # Metadatos internos
         df["fuente_archivo"] = filename
         df["fecha_proceso_utc"] = datetime.utcnow().isoformat()
-
         df["id_registro"] = df.apply(generate_unique_id, axis=1)
 
-        # GUARDAR
+        # Guardar
         output_file = filename.replace(".", "_clean.")
         output_path = os.path.join(PROCESSED_DIR, output_file)
 
@@ -141,7 +134,6 @@ def main():
 
         print(f"[OK] Procesado y guardado: {output_path}")
 
-        # SUBIR A GCP SI MODE = CLOUD
         if MODE == "cloud":
             upload_to_bucket(output_path, f"processed/{output_file}")
 
