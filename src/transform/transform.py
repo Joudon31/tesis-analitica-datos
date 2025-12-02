@@ -1,34 +1,61 @@
 import os
 import json
 import pandas as pd
-import numpy as np
 from google.cloud import storage
 from datetime import datetime
 
-BUCKET_NAME = "tesis-processed-datos-joseph"
+# =============================
+# CONFIG
+# =============================
+BUCKET_RAW = "tesis-raw-datos-joseph"
+BUCKET_PROCESSED = "tesis-processed-datos-joseph"
+CREDENTIALS = "gcp-key.json"
 
 # =============================
-# 🔧 GCP CLIENTE
+# GCP CLIENTS
 # =============================
-def get_gcs_client():
-    return storage.Client()
+def gcs_client():
+    return storage.Client.from_service_account_json(CREDENTIALS)
 
-client = get_gcs_client()
+client = gcs_client()
+
 
 # =============================
-# 🔧 SUBIR ARCHIVO A GCP
+# DOWNLOAD RAW FROM BUCKET
 # =============================
-def upload_to_gcs(local_path, dest_blob):
-    bucket = client.bucket(BUCKET_NAME)
-    blob = bucket.blob(f"processed/{dest_blob}")
+def download_raw_files():
+    bucket = client.bucket(BUCKET_RAW)
+    blobs = bucket.list_blobs()
+
+    os.makedirs("data/raw", exist_ok=True)
+
+    downloaded = []
+
+    for blob in blobs:
+        local_path = f"data/raw/{blob.name}"
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+        blob.download_to_filename(local_path)
+        print(f"[RAW] Descargado: {local_path}")
+        downloaded.append(local_path)
+
+    return downloaded
+
+
+# =============================
+# UPLOAD PROCESSED TO BUCKET
+# =============================
+def upload_processed(local_path, dest_name):
+    bucket = client.bucket(BUCKET_PROCESSED)
+    blob = bucket.blob(f"processed/{dest_name}")
     blob.upload_from_filename(local_path)
-    print(f"[UPLOAD] {dest_blob}")
+    print(f"[UPLOAD] gs://{BUCKET_PROCESSED}/processed/{dest_name}")
 
 
 # =============================
-# 🔎 DETECTAR TIPO DE DATASET
+# DETECTAR DATASET
 # =============================
-def detect_dataset_type(filename):
+def detect_type(filename):
     if "clima" in filename:
         return "clima"
 
@@ -44,149 +71,117 @@ def detect_dataset_type(filename):
     if filename.endswith(".csv"):
         return "csv"
 
-    if filename.endswith(".parquet"):
-        return "parquet"
-
     return "json"
 
 
-# =====================================================
-# 🌦 1) PROCESAR API CLIMA (EXPANDIR hourly)
-# =====================================================
+# =============================
+# TRANSFORMACIONES ESPECIALES
+# =============================
 def transform_clima(path):
     df = pd.read_json(path)
-
     row = df.iloc[0]
 
-    n = len(json.loads(row["hourly.time"]))
+    times = json.loads(row["hourly.time"])
+    temps = json.loads(row["hourly.temperature_2m"])
 
-    new_rows = []
-    for i in range(n):
-        new_rows.append({
+    expanded = []
+    for i in range(len(times)):
+        expanded.append({
             "latitude": row["latitude"],
             "longitude": row["longitude"],
             "timezone": row["timezone"],
-            "time": json.loads(row["hourly.time"])[i],
-            "temperature_2m": json.loads(row["hourly.temperature_2m"])[i],
+            "time": times[i],
+            "temperature_2m": temps[i],
             "fuente_archivo": row["fuente_archivo"],
             "fecha_proceso_utc": row["fecha_proceso_utc"],
             "id_registro": row["id_registro"],
         })
 
-    df2 = pd.DataFrame(new_rows)
-    return df2
+    return pd.DataFrame(expanded)
 
 
-# =====================================================
-# 🌋 2) PROCESAR USGS — EXPANDIR "geometry" + LIMPIAR
-# =====================================================
 def transform_usgs(path):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    fixed = []
+    rows = []
     for row in data:
-        try:
-            coords = json.loads(row["geometry.coordinates"])
-        except:
-            coords = [None, None, None]
+        coords = json.loads(row["geometry.coordinates"])
 
-        new_row = row.copy()
-        new_row["longitude"] = coords[0]
-        new_row["latitude"] = coords[1]
-        new_row["depth"] = coords[2]
-        del new_row["geometry.coordinates"]
+        row["longitude"] = coords[0]
+        row["latitude"] = coords[1]
+        row["depth"] = coords[2]
+        del row["geometry.coordinates"]
 
-        fixed.append(new_row)
+        rows.append(row)
 
-    return pd.DataFrame(fixed)
+    return pd.DataFrame(rows)
 
 
-# =====================================================
-# 🌎 3) PROCESAR SISMOS ECUADOR — LISTA PLANA
-# =====================================================
 def transform_sismos_ec(path):
-    df = pd.read_json(path)
-    # DF ya está en formato de filas → no requiere expandir
-    return df
+    return pd.read_json(path)
 
 
-# =====================================================
-# 🟪 4) PROCESAR SERCOP — EXPANDIR SOLO RELEASES
-# =====================================================
 def transform_sercop(path):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     releases = json.loads(data[0]["releases"])
-    df = pd.json_normalize(releases)
-    return df
+    return pd.json_normalize(releases)
 
 
-# =====================================================
-# 📄 5) CSV NORMAL (solo limpiar y devolver)
-# =====================================================
+# =============================
+# CSV / JSON SIMPLE
+# =============================
 def transform_csv(path):
     return pd.read_csv(path)
 
 
-# =====================================================
-# 🟫 6) JSON NORMAL (sin diccionarios complejos)
-# =====================================================
-def transform_json_simple(path):
-    df = pd.read_json(path)
-    return df
+def transform_json(path):
+    return pd.read_json(path)
 
 
-# =====================================================
-# 🚀 PIPELINE PRINCIPAL
-# =====================================================
-def transform_all():
-    input_dir = "data/raw/"
-    output_dir = "data/processed/"
-    os.makedirs(output_dir, exist_ok=True)
+# =============================
+# MAIN
+# =============================
+def main():
+    print("\n===== INICIANDO TRANSFORM =====")
 
-    files = os.listdir(input_dir)
+    raw_files = download_raw_files()
 
-    for filename in files:
-        path = os.path.join(input_dir, filename)
-        tipo = detect_dataset_type(filename)
+    os.makedirs("data/processed", exist_ok=True)
 
-        print(f"\n=== Procesando {filename} ({tipo}) ===")
+    for path in raw_files:
+        filename = os.path.basename(path)
+        tipo = detect_type(filename)
+
+        print(f"\nProcesando {filename} ({tipo})")
 
         if tipo == "clima":
             df = transform_clima(path)
-
         elif tipo == "usgs":
             df = transform_usgs(path)
-
         elif tipo == "sismos_ec":
             df = transform_sismos_ec(path)
-
         elif tipo == "sercop":
             df = transform_sercop(path)
-
         elif tipo == "csv":
             df = transform_csv(path)
-
-        elif tipo == "parquet":
-            df = pd.read_parquet(path)
-
         else:
-            df = transform_json_simple(path)
+            df = transform_json(path)
 
-        # GUARDAR NDJSON (compatibilidad BigQuery)
         out_name = filename.replace(".json", "_clean.json").replace(".csv", "_clean.csv")
-        output_path = os.path.join(output_dir, out_name)
+        out_path = f"data/processed/{out_name}"
 
         if out_name.endswith(".csv"):
-            df.to_csv(output_path, index=False)
+            df.to_csv(out_path, index=False)
         else:
-            df.to_json(output_path, orient="records", lines=True, force_ascii=False)
+            df.to_json(out_path, orient="records", lines=True, force_ascii=False)
 
-        # SUBIR A GCP
-        upload_to_gcs(output_path, out_name)
+        upload_processed(out_path, out_name)
+
+    print("\n===== TRANSFORM COMPLETO =====")
 
 
 if __name__ == "__main__":
-    transform_all()
+    main()
