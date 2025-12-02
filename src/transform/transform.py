@@ -62,6 +62,7 @@ def load_file(path):
     print(f"[WARN] Formato no soportado: {path}")
     return None
 
+
 def download_all_raw_from_bucket():
     """Descarga TODOS los archivos del bucket RAW hacia data/raw."""
     bucket_name = config["gcp"]["bucket_raw"]
@@ -97,16 +98,32 @@ def main():
 
         df = load_file(raw_path)
 
+        # Caso especial: API USGS produce JSON con lista interna "features"
+        if filename.startswith("api_sismos_usgs"):
+            try:
+                with open(raw_path, "r", encoding="utf-8") as f:
+                    raw_json = json.load(f)
+                if "features" in raw_json:
+                    df = pd.json_normalize(raw_json["features"])
+                    print("[INFO] JSON USGS normalizado correctamente.")
+            except:
+                print("[ERROR] No se pudo normalizar USGS, saltando archivo.")
+                continue
+
         if df is None:
             print(f"[SKIP] No se pudo procesar: {filename}")
             continue
 
-        # LIMPIEZA
+        # NORMALIZACIÓN DE COLUMNAS
         df = normalize_columns(df)
-        # Convertir columnas con listas o diccionarios a cadenas (para USGS y otras APIs JSON complejas)
-        for col in df.columns:
-            df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, (list, dict)) else x)
 
+        # Convertir listas o diccionarios a cadenas ANTES de eliminar duplicados
+        for col in df.columns:
+            df[col] = df[col].apply(
+                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x
+            )
+
+        # LIMPIEZA
         df.drop_duplicates(inplace=True)
         df.dropna(how="all", axis=1, inplace=True)
 
