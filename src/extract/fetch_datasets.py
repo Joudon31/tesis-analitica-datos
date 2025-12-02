@@ -12,84 +12,98 @@ MODE = config["mode"]
 DATA_DIR = "data/raw"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# EDITAR: tus datasets reales luego
-datasets = {
-        # ----------------------------
-    # 1. Datasets estáticos desde GCP
-    # ----------------------------
-    "mies_bonos_2025": "gs://tu_bucket_raw/mies_bonos_pensiones_2025_abril_csv.csv",
-    "presupuesto_misiones_2025": "gs://tu_bucket_raw/mremh_presupuestoejecutadomisionesecuadorexterior_2025junio.csv",
-    "catalogo_compras_2025": "gs://tu_bucket_raw/releases_2025_catalogo_electronico_compra_directa.json",
+# ================================
+# Datasets estáticos (en GCP)
+# ================================
+STATIC_FILES = {
+    "mies_bonos_2025": "mies_bonos_pensiones_2025_abril_csv.csv",
+    "presupuesto_misiones_2025": "mremh_presupuestoejecutadomisionesecuadorexterior_2025junio.csv",
+    "catalogo_compras_2025": "releases_2025_catalogo_electronico_compra_directa.json"
+}
 
-    # ----------------------------
-    # 2. APIs automáticas
-    # ----------------------------
+# ================================
+# APIs automáticas
+# ================================
+API_SOURCES = {
     "api_clima": "https://api.open-meteo.com/v1/forecast?latitude=-2&longitude=-80&hourly=temperature_2m",
-    "api_sismos_ec": "https://api.gael.cloud/general/public/sismos",  # API de sismos en Ecuador
-    "api_sismos_usgs": "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&orderby=time&limit=50"  # Últimos 50 sismos globales
+    "api_sismos_ec": "https://api.gael.cloud/general/public/sismos",
+    "api_sismos_usgs": "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&orderby=time&limit=50"
 }
 
-""" "ejemplo_csv": "https://raw.githubusercontent.com/ageron/handson-ml/master/datasets/housing/housing.csv",
-    "ejemplo_json": "https://jsonplaceholder.typicode.com/posts" """
 
-""" Ejemplo con API JSON:
-    datasets = {
-    "clima_hoy": "https://api.open-meteo.com/v1/forecast?latitude=-2&longitude=-80&hourly=temperature_2m"
-}
+# ================================
+# FUNCIONES HELPERS
+# ================================
+def download_api(name, url, now):
+    """Descarga datos desde APIs y los guarda localmente."""
+    print(f"[INFO] Llamando API: {name}...")
 
-¿Y si quiero datasets del portal de Datos Abiertos del Ecuador?
-datasets = {
-    "gastos_publicos": "https://www.datosabiertos.gob.ec/.../gastos_2024.csv",
-    "presupuesto_educacion": "https://www.datosabiertos.gob.ec/.../edu_presupuesto.csv"
-}
-"""
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
 
-def upload_to_gcp(local_path, bucket_name):
-    client = storage.Client.from_service_account_json(
-        config["gcp"]["credentials"]
-    )
+    filename = f"{name}_{now}.json"
+    path = os.path.join(DATA_DIR, filename)
+
+    with open(path, "wb") as f:
+        f.write(r.content)
+
+    print(f"[OK] API guardada: {path}")
+    return path
+
+
+def copy_from_bucket(blob_name, now):
+    """Copia archivos estáticos desde el bucket GCP a data/raw."""
+    bucket_name = config["gcp"]["bucket_raw"]
+
+    print(f"[INFO] Copiando desde GCP: {blob_name}")
+
+    client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
     bucket = client.bucket(bucket_name)
-    blob = bucket.blob(os.path.basename(local_path))
-    blob.upload_from_filename(local_path)
-    print(f"[GCP] Subido a gs://{bucket_name}/{blob.name}")
+    blob = bucket.blob(blob_name)
 
-def guess_extension_from_url(url, response=None):
-    path = urlparse(url).path.lower()
-    if path.endswith(".csv"):
-        return "csv"
-    if path.endswith(".json") or (response and 'application/json' in response.headers.get('Content-Type', '')):
-        return "json"
-    return "bin"
+    ext = blob_name.split(".")[-1]
+    filename = f"{blob_name.replace('.', '_')}_{now}.{ext}"
+    path = os.path.join(DATA_DIR, filename)
 
+    blob.download_to_filename(path)
+
+    print(f"[OK] Copiado local: {path}")
+    return path
+
+
+# ================================
+# MAIN
+# ================================
 def main():
     now = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
 
-    for name, url in datasets.items():
+    downloaded_files = []
+
+    # ---- ESTÁTICOS DESDE GCP ----
+    print("\n========== ARCHIVOS ESTÁTICOS GCP ==========")
+    for name, blob_name in STATIC_FILES.items():
         try:
-            print(f"[INFO] Descargando {name}...")
-            r = requests.get(url, timeout=60)
-            r.raise_for_status()
-
-            ext = guess_extension_from_url(url, r)
-            filename = f"{name}_{now}.{ext}"
-            local_path = os.path.join(DATA_DIR, filename)
-
-            with open(local_path, "wb") as f:
-                f.write(r.content)
-
-            print(f"[OK] Guardado local: {local_path}")
-
-            # Subir a GCP si modo == cloud
-            if MODE == "cloud":
-                upload_to_gcp(local_path, config["gcp"]["bucket_raw"])
-
+            path = copy_from_bucket(blob_name, now)
+            downloaded_files.append(path)
         except Exception as e:
-            print(f"[ERROR] {e}")
-            
-            # Resumen de archivos descargados
-    print("\n[RESUMEN] Archivos descargados en data/raw/:")
-    for f in os.listdir(DATA_DIR):
+            print(f"[ERROR] No se pudo copiar {blob_name}: {e}")
+
+    # ---- APIs AUTOMÁTICAS ----
+    print("\n========== APIS AUTOMÁTICAS ==========")
+    for name, url in API_SOURCES.items():
+        try:
+            path = download_api(name, url, now)
+            downloaded_files.append(path)
+        except Exception as e:
+            print(f"[ERROR] API falló ({name}): {e}")
+
+    # ---- RESUMEN ----
+    print("\n========== RESUMEN DESCARGAS ==========")
+    for f in downloaded_files:
         print(f" - {f}")
+
+    print("\n[FIN] Extracción completada.")
+
 
 if __name__ == "__main__":
     main()
