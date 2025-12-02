@@ -14,38 +14,28 @@ jobs:
 
     steps:
 
-    - name: 🔹 Checkout repo
+    - name: Checkout repo
       uses: actions/checkout@v4
 
-    - name: 🔹 Instalar Python 3.11
+    - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: "3.11"
 
-    - name: 🔹 Instalar dependencias
+    - name: Install dependencies
       run: |
+        pip install --upgrade pip
         pip install -r requirements.txt
 
-    # ============================
-    #  FIX 1: Crear archivo gcp-key.json desde Base64
-    # Igual que en extract, así evita errores de JSON corrupto
-    # ============================
-    - name: 🔹 Crear archivo de credenciales GCP desde Base64
-      run: |
-        echo "${{ secrets.GCP_KEY }}" | base64 --decode > gcp-key.json
-
-    # ============================
-    #  FIX 2: Agregar carpeta del proyecto al PYTHONPATH
-    # Esto permite usar: from src.config_loader import load_config
-    # ============================
-    - name: 🔹 Configurar PYTHONPATH
-      run: |
-        echo "PYTHONPATH=$PYTHONPATH:$(pwd)" >> $GITHUB_ENV
-
-    # ============================
-    # Ejecutar carga a BigQuery
-    # ============================
-    - name: 🔹 Ejecutar LOAD hacia BigQuery
+    - name: Decode and save GCP credentials
       env:
+        GCP_KEY: ${{ secrets.GCP_KEY }}
+      run: |
+        echo "$GCP_KEY" | base64 -d > gcp-key.json
+
+    #  ESTA ES LA PARTE CLAVE → EXACTAMENTE COMO TRANSFORM
+    - name: Run LOAD step
+      env:
+        PYTHONPATH: ${{ github.workspace }}
         GOOGLE_APPLICATION_CREDENTIALS: gcp-key.json
       run: python src/load/load_to_bigquery.py
