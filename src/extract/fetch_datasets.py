@@ -14,9 +14,23 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 # EDITAR: tus datasets reales luego
 datasets = {
-    "ejemplo_csv": "https://raw.githubusercontent.com/ageron/handson-ml/master/datasets/housing/housing.csv",
-    "ejemplo_json": "https://jsonplaceholder.typicode.com/posts"
+        # ----------------------------
+    # 1. Datasets estáticos desde GCP
+    # ----------------------------
+    "mies_bonos_2025": "gs://tu_bucket_raw/mies_bonos_pensiones_2025_abril_csv.csv",
+    "presupuesto_misiones_2025": "gs://tu_bucket_raw/mremh_presupuestoejecutadomisionesecuadorexterior_2025junio.csv",
+    "catalogo_compras_2025": "gs://tu_bucket_raw/releases_2025_catalogo_electronico_compra_directa.json",
+
+    # ----------------------------
+    # 2. APIs automáticas
+    # ----------------------------
+    "api_clima": "https://api.open-meteo.com/v1/forecast?latitude=-2&longitude=-80&hourly=temperature_2m",
+    "api_sismos_ec": "https://api.gael.cloud/general/public/sismos",  # API de sismos en Ecuador
+    "api_sismos_usgs": "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&orderby=time&limit=50"  # Últimos 50 sismos globales
 }
+
+""" "ejemplo_csv": "https://raw.githubusercontent.com/ageron/handson-ml/master/datasets/housing/housing.csv",
+    "ejemplo_json": "https://jsonplaceholder.typicode.com/posts" """
 
 """ Ejemplo con API JSON:
     datasets = {
