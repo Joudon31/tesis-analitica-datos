@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+from google.cloud import storage
 from google.cloud import bigquery
 from src.config_loader import load_config
 
@@ -78,6 +79,22 @@ def ensure_dataset(client):
         client.create_dataset(dataset_ref)
         print(f"[OK] Dataset creado")
 
+def download_processed_from_bucket():
+    bucket_name = config["gcp"]["bucket_processed"]
+    client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
+    bucket = client.bucket(bucket_name)
+
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
+
+    print(f"[INFO] Descargando archivos procesados desde GCP bucket: {bucket_name}")
+
+    blobs = bucket.list_blobs()
+
+    for blob in blobs:
+        dest_path = os.path.join(PROCESSED_DIR, blob.name)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        blob.download_to_filename(dest_path)
+        print(f"[OK] Descargado: {blob.name} -> {dest_path}")
 
 # ============================
 #  Pipeline LOAD
@@ -88,6 +105,9 @@ def main():
     client = bigquery.Client.from_service_account_json(config["gcp"]["credentials"])
 
     ensure_dataset(client)
+    
+    # Descargar archivos del bucket processed
+    download_processed_from_bucket()
 
     files = os.listdir(PROCESSED_DIR)
     print(f"[INFO] Archivos detectados en processed/: {files}")
