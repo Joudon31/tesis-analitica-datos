@@ -103,6 +103,10 @@ def main():
 
         # LIMPIEZA
         df = normalize_columns(df)
+        # Convertir columnas con listas o diccionarios a cadenas (para USGS y otras APIs JSON complejas)
+        for col in df.columns:
+            df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, (list, dict)) else x)
+
         df.drop_duplicates(inplace=True)
         df.dropna(how="all", axis=1, inplace=True)
 
