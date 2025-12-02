@@ -88,24 +88,80 @@ def upload_to_bucket(local_path, dest_name):
     blob.upload_from_filename(local_path)
     print(f"[GCP] Subido a gs://{bucket_name}/{dest_name}")
 
+def read_csv_robusto(path):
+    """
+    Lector CSV infalible con múltiples estrategias:
+    1) utf-8
+    2) latin-1
+    3) engine=python
+    4) detección por delimitadores raros
+    5) lectura línea por línea en caso extremo
+    """
+
+    # Estrategia 1: UTF-8 normal
+    try:
+        return pd.read_csv(path, encoding="utf-8", low_memory=False)
+    except:
+        pass
+
+    # Estrategia 2: LATIN-1
+    try:
+        return pd.read_csv(path, encoding="latin-1", low_memory=False)
+    except:
+        pass
+
+    # Estrategia 3: engine=python (tolerante)
+    try:
+        return pd.read_csv(path, encoding="latin-1", engine="python", on_bad_lines="skip")
+    except:
+        pass
+
+    # Estrategia 4: detectar delimitador
+    import csv
+    with open(path, "r", errors="ignore") as f:
+        dialect = csv.Sniffer().sniff(f.read(2048))
+
+    try:
+        return pd.read_csv(path, delimiter=dialect.delimiter, encoding="latin-1", engine="python")
+    except:
+        pass
+
+    # Estrategia 5 FINAL: lectura manual (nunca falla)
+    rows = []
+    with open(path, "r", errors="ignore") as f:
+        for line in f:
+            rows.append(line.strip().split(","))
+
+    df = pd.DataFrame(rows)
+    df.columns = [f"col_{i}" for i in range(df.shape[1])]
+    return df
+
 
 def load_file(path):
     ext = path.split(".")[-1].lower()
 
-    # CSV → CSV normal
+    # CSV normal
     if ext == "csv":
-        try:
-            return pd.read_csv(path, encoding="latin-1", low_memory=False), "csv"
-        except:
-            return pd.read_csv(path, engine="python", on_bad_lines="skip"), "csv"
+        df = read_csv_robusto(path)
+        return df, "csv"
 
     # Excel
     if ext in ["xlsx", "xls"]:
-        return pd.read_excel(path), "csv"
+        df = pd.read_excel(path)
+        return df, "csv"
 
     # JSON y pseudo-JSON
-    if ext == "json":
+    if ext == "json" or ext == "bin":
         df, detected_type = load_json_safe(path)
+
+        # Si era .bin, asumimos que puede ser CSV disfrazado
+        if detected_type == "unknown" and ext == "bin":
+            try:
+                df = read_csv_robusto(path)
+                return df, "csv"
+            except:
+                return None, "unknown"
+
         return df, detected_type
 
     print(f"[WARN] Formato no soportado: {path}")
