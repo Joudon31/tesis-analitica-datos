@@ -1,251 +1,192 @@
 import os
-import pandas as pd
 import json
-import hashlib
-from datetime import datetime
+import pandas as pd
+import numpy as np
 from google.cloud import storage
-from src.config_loader import load_config
+from datetime import datetime
 
-config = load_config()
-MODE = config["mode"]
+BUCKET_NAME = "tesis-processed-datos-joseph"
 
-RAW_DIR = "data/raw"
-PROCESSED_DIR = "data/processed"
-os.makedirs(RAW_DIR, exist_ok=True)
-os.makedirs(PROCESSED_DIR, exist_ok=True)
+# =============================
+# 🔧 GCP CLIENTE
+# =============================
+def get_gcs_client():
+    return storage.Client()
 
+client = get_gcs_client()
 
-# ============================================
-# DETECCIÓN SÓLIDA: JSON REAL vs CSV DISFRAZADO
-# ============================================
-def load_json_safe(path):
-    """
-    Intenta cargar JSON real.
-    Si no comienza con { o [, se analiza si el archivo es CSV disfrazado.
-    Retorna (df, tipo) donde tipo ∈ {"json", "csv", "unknown"}.
-    """
-
-    # Intento preliminar: leer texto completo
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read().strip()
-    except:
-        return None, "unknown"
-
-    # 1) JSON real comienza con { o [
-    if text.startswith("{") or text.startswith("["):
-        try:
-            data = json.loads(text)
-
-            if isinstance(data, dict) and "features" in data:
-                return pd.json_normalize(data["features"]), "json"
-
-            if isinstance(data, list):
-                return pd.json_normalize(data), "json"
-
-            return pd.json_normalize(data), "json"
-        except:
-            pass
-
-    # 2) Detectar CSV disfrazado (si la primera línea tiene muchas comas)
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            first_line = f.readline()
-
-        if first_line.count(",") > 2:
-            df = pd.read_csv(path, engine="python", on_bad_lines="skip")
-            return df, "csv"
-    except:
-        pass
-
-    return None, "unknown"
-
-
-# ============================================
-# HELPERS
-# ============================================
-def normalize_columns(df):
-    df.columns = (
-        df.columns.str.strip()
-                  .str.lower()
-                  .str.replace(" ", "_")
-                  .str.replace("-", "_")
-                  .str.replace("/", "_")
-    )
-    return df
-
-
-def generate_unique_id(row):
-    raw = "|".join(map(str, row.values))
-    return hashlib.md5(raw.encode()).hexdigest()
-
-
-def upload_to_bucket(local_path, dest_name):
-    bucket_name = config["gcp"]["bucket_processed"]
-    client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(dest_name)
+# =============================
+# 🔧 SUBIR ARCHIVO A GCP
+# =============================
+def upload_to_gcs(local_path, dest_blob):
+    bucket = client.bucket(BUCKET_NAME)
+    blob = bucket.blob(f"processed/{dest_blob}")
     blob.upload_from_filename(local_path)
-    print(f"[GCP] Subido a gs://{bucket_name}/{dest_name}")
+    print(f"[UPLOAD] {dest_blob}")
 
-def read_csv_robusto(path):
-    """
-    Lector CSV infalible con múltiples estrategias:
-    1) utf-8
-    2) latin-1
-    3) engine=python
-    4) detección por delimitadores raros
-    5) lectura línea por línea en caso extremo
-    """
 
-    # Estrategia 1: UTF-8 normal
-    try:
-        return pd.read_csv(path, encoding="utf-8", low_memory=False)
-    except:
-        pass
+# =============================
+# 🔎 DETECTAR TIPO DE DATASET
+# =============================
+def detect_dataset_type(filename):
+    if "clima" in filename:
+        return "clima"
 
-    # Estrategia 2: LATIN-1
-    try:
-        return pd.read_csv(path, encoding="latin-1", low_memory=False)
-    except:
-        pass
+    if "sismos_usgs" in filename:
+        return "usgs"
 
-    # Estrategia 3: engine=python (tolerante)
-    try:
-        return pd.read_csv(path, encoding="latin-1", engine="python", on_bad_lines="skip")
-    except:
-        pass
+    if "sismos_ec" in filename:
+        return "sismos_ec"
 
-    # Estrategia 4: detectar delimitador
-    import csv
-    with open(path, "r", errors="ignore") as f:
-        dialect = csv.Sniffer().sniff(f.read(2048))
+    if "catalogo_electronico" in filename:
+        return "sercop"
 
-    try:
-        return pd.read_csv(path, delimiter=dialect.delimiter, encoding="latin-1", engine="python")
-    except:
-        pass
+    if filename.endswith(".csv"):
+        return "csv"
 
-    # Estrategia 5 FINAL: lectura manual (nunca falla)
-    rows = []
-    with open(path, "r", errors="ignore") as f:
-        for line in f:
-            rows.append(line.strip().split(","))
+    if filename.endswith(".parquet"):
+        return "parquet"
 
-    df = pd.DataFrame(rows)
-    df.columns = [f"col_{i}" for i in range(df.shape[1])]
+    return "json"
+
+
+# =====================================================
+# 🌦 1) PROCESAR API CLIMA (EXPANDIR hourly)
+# =====================================================
+def transform_clima(path):
+    df = pd.read_json(path)
+
+    row = df.iloc[0]
+
+    n = len(json.loads(row["hourly.time"]))
+
+    new_rows = []
+    for i in range(n):
+        new_rows.append({
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+            "timezone": row["timezone"],
+            "time": json.loads(row["hourly.time"])[i],
+            "temperature_2m": json.loads(row["hourly.temperature_2m"])[i],
+            "fuente_archivo": row["fuente_archivo"],
+            "fecha_proceso_utc": row["fecha_proceso_utc"],
+            "id_registro": row["id_registro"],
+        })
+
+    df2 = pd.DataFrame(new_rows)
+    return df2
+
+
+# =====================================================
+# 🌋 2) PROCESAR USGS — EXPANDIR "geometry" + LIMPIAR
+# =====================================================
+def transform_usgs(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    fixed = []
+    for row in data:
+        try:
+            coords = json.loads(row["geometry.coordinates"])
+        except:
+            coords = [None, None, None]
+
+        new_row = row.copy()
+        new_row["longitude"] = coords[0]
+        new_row["latitude"] = coords[1]
+        new_row["depth"] = coords[2]
+        del new_row["geometry.coordinates"]
+
+        fixed.append(new_row)
+
+    return pd.DataFrame(fixed)
+
+
+# =====================================================
+# 🌎 3) PROCESAR SISMOS ECUADOR — LISTA PLANA
+# =====================================================
+def transform_sismos_ec(path):
+    df = pd.read_json(path)
+    # DF ya está en formato de filas → no requiere expandir
     return df
 
 
-def load_file(path):
-    ext = path.split(".")[-1].lower()
+# =====================================================
+# 🟪 4) PROCESAR SERCOP — EXPANDIR SOLO RELEASES
+# =====================================================
+def transform_sercop(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    # CSV normal
-    if ext == "csv":
-        df = read_csv_robusto(path)
-        return df, "csv"
-
-    # Excel
-    if ext in ["xlsx", "xls"]:
-        df = pd.read_excel(path)
-        return df, "csv"
-
-    # JSON y pseudo-JSON
-    if ext == "json" or ext == "bin":
-        df, detected_type = load_json_safe(path)
-
-        # Si era .bin, asumimos que puede ser CSV disfrazado
-        if detected_type == "unknown" and ext == "bin":
-            try:
-                df = read_csv_robusto(path)
-                return df, "csv"
-            except:
-                return None, "unknown"
-
-        return df, detected_type
-
-    print(f"[WARN] Formato no soportado: {path}")
-    return None, "unknown"
+    releases = json.loads(data[0]["releases"])
+    df = pd.json_normalize(releases)
+    return df
 
 
-def download_all_raw_from_bucket():
-    bucket_name = config["gcp"]["bucket_raw"]
-    client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
-    bucket = client.bucket(bucket_name)
-
-    print(f"[INFO] Descargando archivos RAW desde GCP bucket: {bucket_name}")
-
-    for blob in bucket.list_blobs():
-        dest_path = os.path.join(RAW_DIR, blob.name)
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        blob.download_to_filename(dest_path)
-        print(f"[OK] Descargado: {blob.name} -> {dest_path}")
+# =====================================================
+# 📄 5) CSV NORMAL (solo limpiar y devolver)
+# =====================================================
+def transform_csv(path):
+    return pd.read_csv(path)
 
 
-# ============================================
-# MAIN
-# ============================================
-def main():
-    print("\n========== INICIANDO TRANSFORMACIÓN ==========\n")
+# =====================================================
+# 🟫 6) JSON NORMAL (sin diccionarios complejos)
+# =====================================================
+def transform_json_simple(path):
+    df = pd.read_json(path)
+    return df
 
-    download_all_raw_from_bucket()
 
-    print("\n[INFO] Archivos encontrados en data/raw:")
-    print(os.listdir(RAW_DIR))
+# =====================================================
+# 🚀 PIPELINE PRINCIPAL
+# =====================================================
+def transform_all():
+    input_dir = "data/raw/"
+    output_dir = "data/processed/"
+    os.makedirs(output_dir, exist_ok=True)
 
-    for filename in os.listdir(RAW_DIR):
-        raw_path = os.path.join(RAW_DIR, filename)
-        print(f"\n[INFO] Procesando: {filename}")
+    files = os.listdir(input_dir)
 
-        df, ftype = load_file(raw_path)
+    for filename in files:
+        path = os.path.join(input_dir, filename)
+        tipo = detect_dataset_type(filename)
 
-        if df is None or ftype == "unknown":
-            print(f"[SKIP] No se pudo procesar: {filename}")
-            continue
+        print(f"\n=== Procesando {filename} ({tipo}) ===")
 
-        # Normalizar columnas
-        df = normalize_columns(df)
+        if tipo == "clima":
+            df = transform_clima(path)
 
-        # Convertir listas/dict → strings
-        for col in df.columns:
-            df[col] = df[col].apply(
-                lambda x: json.dumps(x, ensure_ascii=False)
-                if isinstance(x, (list, dict))
-                else x
-            )
+        elif tipo == "usgs":
+            df = transform_usgs(path)
 
-        # Limpieza general
-        df.drop_duplicates(inplace=True)
-        df.dropna(how="all", axis=1, inplace=True)
+        elif tipo == "sismos_ec":
+            df = transform_sismos_ec(path)
 
-        # Metadatos
-        df["fuente_archivo"] = filename
-        df["fecha_proceso_utc"] = datetime.utcnow().isoformat()
-        df["id_registro"] = df.apply(generate_unique_id, axis=1)
+        elif tipo == "sercop":
+            df = transform_sercop(path)
 
-        # Seleccionar extensión correcta
-        if ftype == "json":
-            out_ext = ".json"
+        elif tipo == "csv":
+            df = transform_csv(path)
+
+        elif tipo == "parquet":
+            df = pd.read_parquet(path)
+
         else:
-            out_ext = ".csv"
+            df = transform_json_simple(path)
 
-        output_file = filename.replace(".", "_clean") + out_ext
-        output_path = os.path.join(PROCESSED_DIR, output_file)
+        # GUARDAR NDJSON (compatibilidad BigQuery)
+        out_name = filename.replace(".json", "_clean.json").replace(".csv", "_clean.csv")
+        output_path = os.path.join(output_dir, out_name)
 
-        # Guardar archivo limpio
-        if out_ext == ".csv":
-            df.to_csv(output_path, index=False, encoding="utf-8")
+        if out_name.endswith(".csv"):
+            df.to_csv(output_path, index=False)
         else:
-            df.to_json(output_path, orient="records", force_ascii=False)
+            df.to_json(output_path, orient="records", lines=True, force_ascii=False)
 
-        print(f"[OK] Guardado transformado → {output_path}")
-
-        # Subir a bucket en modo cloud
-        if MODE == "cloud":
-            upload_to_bucket(output_path, f"processed/{output_file}")
-
-    print("\n========== TRANSFORMACIÓN COMPLETA ==========\n")
+        # SUBIR A GCP
+        upload_to_gcs(output_path, out_name)
 
 
 if __name__ == "__main__":
-    main()
+    transform_all()

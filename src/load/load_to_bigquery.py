@@ -1,89 +1,95 @@
 import os
-import json
 import pandas as pd
-from google.cloud import storage, bigquery
-from src.config_loader import load_config
+from google.cloud import bigquery, storage
 
-config = load_config()
+PROJECT_ID = "proyecto-datos-gub-2025"
+DATASET_ID = "warehouse_tesis"
+BUCKET_NAME = "tesis-processed-datos-joseph"
 
-PROJECT_ID = config["gcp"]["project_id"]
-DATASET_ID = config["gcp"]["dataset_id"]
-
-PROCESSED_DIR = "data/processed"
-os.makedirs(PROCESSED_DIR, exist_ok=True)
+client_bq = bigquery.Client()
+client_gcs = storage.Client()
 
 
-def ensure_dataset(client):
-    ref = bigquery.Dataset(f"{PROJECT_ID}.{DATASET_ID}")
-    try:
-        client.get_dataset(ref)
-    except:
-        client.create_dataset(ref)
-        print(f"[CREATE] Dataset creado: {DATASET_ID}")
+# ===========================================
+# 📥 DESCARGAR ARCHIVOS PROCESADOS DEL BUCKET
+# ===========================================
+def download_processed_files():
+    bucket = client_gcs.bucket(BUCKET_NAME)
+    blobs = bucket.list_blobs(prefix="processed/")
+
+    local_files = []
+
+    os.makedirs("data/processed/", exist_ok=True)
+
+    for blob in blobs:
+        filename = blob.name.replace("processed/", "")
+        local_path = f"data/processed/{filename}"
+
+        blob.download_to_filename(local_path)
+        print(f"[OK] Descargado → {local_path}")
+        local_files.append(local_path)
+
+    return local_files
 
 
-def load_csv(client, table, path):
-    cfg = bigquery.LoadJobConfig(
-        autodetect=True,
-        source_format=bigquery.SourceFormat.CSV,
-        skip_leading_rows=1,
-        write_disposition="WRITE_APPEND",
-    )
+# =======================================
+# 📤 CARGAR ARCHIVO A BIGQUERY
+# =======================================
+def load_file_to_bq(table_id, path):
+    job_config = bigquery.LoadJobConfig()
+
+    if path.endswith(".csv"):
+        job_config.source_format = bigquery.SourceFormat.CSV
+        job_config.autodetect = True
+        job_config.skip_leading_rows = 1
+
+    elif path.endswith(".parquet"):
+        job_config.source_format = bigquery.SourceFormat.PARQUET
+
+    else:
+        job_config.source_format = bigquery.SourceFormat.NEWLINE_DELIMITED_JSON
+        job_config.autodetect = True
+
     with open(path, "rb") as f:
-        job = client.load_table_from_file(f, table, job_config=cfg)
+        job = client_bq.load_table_from_file(
+            f,
+            table_id,
+            job_config=job_config
+        )
     job.result()
-    print(f"[OK] CSV cargado → {table}")
+    print(f"[LOAD OK] {path} → {table_id}")
 
 
-def load_json(client, table, path):
-    cfg = bigquery.LoadJobConfig(
-        autodetect=True,
-        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-        write_disposition="WRITE_APPEND"
-    )
-    with open(path, "rb") as f:
-        job = client.load_table_from_file(f, table, job_config=cfg)
-    job.result()
-    print(f"[OK] JSON cargado → {table}")
-
-
-def download_processed():
-    bucket = storage.Client.from_service_account_json(
-        config["gcp"]["credentials"]
-    ).bucket(config["gcp"]["bucket_processed"])
-
-    for blob in bucket.list_blobs(prefix="processed/"):
-        name = blob.name.replace("processed/", "")
-        if not name:
-            continue
-        dest = os.path.join(PROCESSED_DIR, name)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        blob.download_to_filename(dest)
-        print(f"[OK] Descargado → {dest}")
-
-
+# =======================================
+# 🚀 PROCESO PRINCIPAL
+# =======================================
 def main():
-    print("INICIANDO LOAD → BIGQUERY")
+    print("\n=========== INICIANDO LOAD → BIGQUERY ===========\n")
 
-    client = bigquery.Client.from_service_account_json(config["gcp"]["credentials"])
-    ensure_dataset(client)
+    # 1) DESCARGAR ARCHIVOS
+    files = download_processed_files()
 
-    download_processed()
+    # 2) CREAR DATASET SI NO EXISTE
+    dataset_ref = bigquery.Dataset(f"{PROJECT_ID}.{DATASET_ID}")
+    try:
+        client_bq.get_dataset(dataset_ref)
+        print("[✓] Dataset existente:", DATASET_ID)
+    except:
+        client_bq.create_dataset(dataset_ref)
+        print("[+] Dataset creado:", DATASET_ID)
 
-    for f in os.listdir(PROCESSED_DIR):
-        path = os.path.join(PROCESSED_DIR, f)
+    # 3) CARGAR UNO POR UNO
+    for path in files:
+        filename = os.path.basename(path)
+        table_name = filename.replace(".", "_").lower()
+        table_id = f"{PROJECT_ID}.{DATASET_ID}.{table_name}"
 
-        table_name = f.split("_clean")[0].lower()
-        table = f"{PROJECT_ID}.{DATASET_ID}.{table_name}"
+        print("\n-------------------------------")
+        print(f"Procesando archivo: {filename}")
+        print(f"Tabla destino: {table_id}")
+        print("-------------------------------")
 
-        if f.endswith(".csv"):
-            load_csv(client, table, path)
-
-        elif f.endswith(".json"):
-            load_json(client, table, path)
-
-        else:
-            print(f"[SKIP] No soportado: {f}")
+        load_file_to_bq(table_id, path)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ jobs:
       run: |
         pip install --upgrade pip
         pip install -r requirements.txt
-        pip install google-cloud-bigquery google-cloud-storage pyarrow pandas
+        pip install google-cloud-bigquery google-cloud-storage pyarrow pandas fastjsonschema ujson
 
     - name: Decode and save GCP credentials
       env:
@@ -37,8 +37,7 @@ jobs:
     - name: Run LOAD step (fix PYTHONPATH)
       env:
         GOOGLE_APPLICATION_CREDENTIALS: gcp-key.json
+        PYTHONPATH: "${{ github.workspace }}"
       run: |
-        export PYTHONPATH="${PYTHONPATH}:${GITHUB_WORKSPACE}"
         echo "PYTHONPATH = $PYTHONPATH"
-
         python src/load/load_to_bigquery.py
