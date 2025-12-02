@@ -1,0 +1,44 @@
+name: Transform Data (ETL-T)
+
+on:
+  workflow_dispatch:  # Permite ejecutarlo manualmente
+  push:
+    branches:
+      - main
+    paths:
+      - "src/transform/**"
+      - "data/raw/**"
+      - ".github/workflows/transform.yml"
+  workflow_run:
+    workflows: ["Extract Data (ETL-E)"]
+    types:
+      - completed
+
+jobs:
+  transform:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Decode and save GCP key
+      env:
+        GCP_KEY: ${{ secrets.GCP_KEY }}
+      run: echo "$GCP_KEY" | base64 -d > gcp-key.json
+
+    - name: Run Transform Step
+      env:
+        PYTHONPATH: ${{ github.workspace }}
+        MODE: cloud
+      run: python src/transform/transform.py

@@ -1,89 +1,108 @@
-import glob
 import os
 import pandas as pd
+import json
+import hashlib
+from datetime import datetime
 from google.cloud import storage
+from src.config_loader import load_config
+
+config = load_config()
+MODE = config["mode"]
 
 RAW_DIR = "data/raw"
-OUT_DIR = "data/processed"
-os.makedirs(OUT_DIR, exist_ok=True)
+PROCESSED_DIR = "data/processed"
+os.makedirs(PROCESSED_DIR, exist_ok=True)
 
-GCP_BUCKET = "tesis-processed-datos-joseph"
 
-def subir_gcp(local_path, bucket_name):
-    """Sube un archivo a Google Cloud Storage"""
-    try:
-        client = storage.Client()
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(os.path.basename(local_path))
-        blob.upload_from_filename(local_path)
-        print(f"[GCP] Subido a gs://{bucket_name}/{os.path.basename(local_path)}")
-    except Exception as e:
-        print(f"[GCP ERROR] {e}")
-
-def limpiar_df(df):
-    df = df.dropna(axis=1, how="all")  # columnas vacías
-    df = df.drop_duplicates()           # filas duplicadas
-    for col in df.columns:
-        if df[col].dtype == object:
-            try:
-                df[col] = pd.to_numeric(
-                    df[col].astype(str).str.replace(",", ".").str.replace("%", ""),
-                    errors="ignore"
-                )
-            except Exception:
-                continue
+# =============================
+# HELPERS
+# =============================
+def normalize_columns(df):
+    df.columns = (
+        df.columns.str.strip()
+                  .str.lower()
+                  .str.replace(" ", "_")
+                  .str.replace("-", "_")
+                  .str.replace("/", "_")
+    )
     return df
 
-def process():
-    files = glob.glob(os.path.join(RAW_DIR, "*"))
 
-    if not files:
-        print("[INFO] No se encontraron archivos en data/raw")
-        return
+def generate_unique_id(row):
+    """Crear hash único por fila."""
+    raw = "|".join(map(str, row.values))
+    return hashlib.md5(raw.encode()).hexdigest()
 
-    for f in files:
-        fname = os.path.basename(f)
-        out_file = os.path.join(OUT_DIR, os.path.splitext(fname)[0] + ".parquet")
 
-        # Procesar solo si no existe localmente
-        if not os.path.exists(out_file):
-            print(f"[INFO] Procesando: {fname}")
-            try:
-                if fname.lower().endswith(".csv"):
-                    try:
-                        df = pd.read_csv(f, sep=None, engine="python", encoding="utf-8")
-                    except Exception:
-                        df = pd.read_csv(f, sep=None, engine="python", encoding="latin1")
-                    df = limpiar_df(df)
-                    df.to_parquet(out_file, engine="pyarrow", index=False)
-                    print(f"[OK] CSV -> Parquet: {out_file}")
+def upload_to_bucket(local_path, dest_name):
+    bucket_name = config["gcp"]["bucket_processed"]
+    client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(dest_name)
+    blob.upload_from_filename(local_path)
+    print(f"[GCP] Subido a gs://{bucket_name}/{dest_name}")
 
-                elif fname.lower().endswith(".json") or fname.lower().endswith(".bin"):
-                    try:
-                        df = pd.read_json(f, lines=True, encoding="utf-8")
-                    except Exception:
-                        df = pd.read_json(f, lines=True, encoding="latin1")
-                    df = limpiar_df(df)
-                    df.to_parquet(out_file, engine="pyarrow", index=False)
-                    print(f"[OK] JSON/BIN -> Parquet: {out_file}")
 
-                else:
-                    print(f"[SKIP] Tipo no soportado: {fname}")
-                    continue
+def load_file(path):
+    """Carga archivos dinámicamente según su extensión."""
+    ext = path.split(".")[-1].lower()
 
-            except Exception as e:
-                print(f"[ERROR] Falló el procesamiento de {fname}: {e}")
-                continue
-        else:
-            print(f"[SKIP] Ya procesado localmente: {fname}")
+    if ext == "csv":
+        return pd.read_csv(path, encoding="latin-1", low_memory=False)
 
-        # Subir siempre a GCP aunque el archivo exista localmente
-        subir_gcp(out_file, GCP_BUCKET)
+    if ext in ["xlsx", "xls"]:
+        return pd.read_excel(path)
 
-    # Resumen final
-    print("\n[RESUMEN] Archivos procesados/subidos en data/processed y GCP:")
-    for pf in glob.glob(os.path.join(OUT_DIR, "*.parquet")):
-        print(f" - {os.path.basename(pf)}")
+    if ext == "json":
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            data = json.load(f)
+        return pd.json_normalize(data)
+
+    print(f"[WARN] Formato no soportado: {path}")
+    return None
+
+
+# =============================
+# MAIN
+# =============================
+def main():
+    print("\n========== INICIANDO TRANSFORMACIÓN ==========\n")
+
+    for filename in os.listdir(RAW_DIR):
+        raw_path = os.path.join(RAW_DIR, filename)
+        print(f"[INFO] Procesando: {filename}")
+
+        df = load_file(raw_path)
+
+        if df is None:
+            print(f"[SKIP] No se pudo procesar: {filename}")
+            continue
+
+        # LIMPIEZA
+        df = normalize_columns(df)
+        df.drop_duplicates(inplace=True)
+        df.dropna(how="all", axis=1, inplace=True)
+
+        # AGREGAR CAMPOS INTERNOS
+        df["fuente_archivo"] = filename
+        df["fecha_proceso_utc"] = datetime.utcnow().isoformat()
+
+        df["id_registro"] = df.apply(generate_unique_id, axis=1)
+
+        # GUARDAR
+        output_file = filename.replace(".", "_clean.")
+        output_path = os.path.join(PROCESSED_DIR, output_file)
+
+        df.to_csv(output_path, index=False, encoding="utf-8")
+
+        print(f"[OK] Procesado y guardado: {output_path}")
+
+        # SUBIR A GCP SI MODE = CLOUD
+        if MODE == "cloud":
+            upload_to_bucket(output_path, f"processed/{output_file}")
+
+    print("\n========== TRANSFORMACIÓN COMPLETA ==========\n")
+
 
 if __name__ == "__main__":
-    process()
+    main()
