@@ -26,6 +26,7 @@ jobs:
       run: |
         pip install --upgrade pip
         pip install -r requirements.txt
+        pip install google-cloud-bigquery google-cloud-storage pyarrow pandas
 
     - name: Decode and save GCP credentials
       env:
@@ -37,7 +38,6 @@ jobs:
       env:
         GOOGLE_APPLICATION_CREDENTIALS: gcp-key.json
       run: |
-        #  AÑADIR RUTA ABSOLUTA AL PYTHONPATH
         export PYTHONPATH="${PYTHONPATH}:${GITHUB_WORKSPACE}"
         echo "PYTHONPATH = $PYTHONPATH"
 
