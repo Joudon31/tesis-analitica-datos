@@ -14,10 +14,18 @@ PROCESSED_DIR = "data/processed"
 os.makedirs(RAW_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
-
 # =============================
 # HELPERS
 # =============================
+
+def normalize_name(name: str) -> str:
+    name = name.lower().strip()
+    name = name.replace(" ", "_").replace("-", "_").replace("/", "_")
+    name = name.replace(":", "_")
+    name = name.replace("__", "_")
+    return name
+
+
 def normalize_columns(df):
     df.columns = (
         df.columns.str.strip()
@@ -38,24 +46,20 @@ def upload_to_bucket(local_path, dest_name):
     bucket_name = config["gcp"]["bucket_processed"]
     client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
     bucket = client.bucket(bucket_name)
-    blob = bucket.blob(dest_name)
-    blob.upload_from_filename(local_path)
-    print(f"[GCP] Subido a gs://{bucket_name}/{dest_name}")
+
+    dest_blob = bucket.blob(dest_name)
+    dest_blob.upload_from_filename(local_path)
+    print(f"[UPLOAD] {local_path} → gs://{bucket_name}/{dest_name}")
 
 
 def load_file(path):
     ext = path.split(".")[-1].lower()
 
-    # ======================
-    # CSV ROBUSTO
-    # ======================
     if ext == "csv":
         try:
-            # Intento normal
             return pd.read_csv(path, encoding="latin-1", low_memory=False)
-        except Exception:
+        except:
             try:
-                # Detectar delimitador
                 import csv
                 with open(path, "r", encoding="latin-1", errors="ignore") as f:
                     dialect = csv.Sniffer().sniff(f.readline())
@@ -66,8 +70,7 @@ def load_file(path):
                     engine="python",
                     on_bad_lines="skip"
                 )
-            except Exception:
-                # Último intento: cargar como texto plano separado por ;
+            except:
                 return pd.read_csv(
                     path,
                     encoding="latin-1",
@@ -76,25 +79,17 @@ def load_file(path):
                     on_bad_lines="skip"
                 )
 
-    # ======================
-    # EXCEL
-    # ======================
     if ext in ["xlsx", "xls"]:
         return pd.read_excel(path)
 
-    # ======================
-    # JSON (cualquier estructura)
-    # ======================
     if ext == "json":
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             data = json.load(f)
 
         if isinstance(data, dict) and "features" in data:
             return pd.json_normalize(data["features"])
-
         if isinstance(data, list):
             return pd.json_normalize(data)
-
         return pd.json_normalize(data)
 
     print(f"[WARN] Formato no soportado: {path}")
@@ -106,13 +101,13 @@ def download_all_raw_from_bucket():
     client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
     bucket = client.bucket(bucket_name)
 
-    print(f"[INFO] Descargando archivos RAW desde GCP bucket: {bucket_name}")
+    print(f"[INFO] Descargando RAW desde bucket: {bucket_name}")
 
     for blob in bucket.list_blobs():
         dest_path = os.path.join(RAW_DIR, blob.name)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         blob.download_to_filename(dest_path)
-        print(f"[OK] Descargado: {blob.name} -> {dest_path}")
+        print(f"[OK] Descargado: {blob.name} → {dest_path}")
 
 
 # =============================
@@ -120,10 +115,10 @@ def download_all_raw_from_bucket():
 # =============================
 def main():
     print("\n========== INICIANDO TRANSFORMACIÓN ==========\n")
-    
+
     download_all_raw_from_bucket()
 
-    print("\n[INFO] Archivos disponibles en data/raw/:")
+    print("\n[INFO] Archivos en data/raw/:")
     print(os.listdir(RAW_DIR))
 
     for filename in os.listdir(RAW_DIR):
@@ -131,15 +126,12 @@ def main():
         print(f"[INFO] Procesando: {filename}")
 
         df = load_file(raw_path)
-
         if df is None:
             print(f"[SKIP] No se pudo procesar: {filename}")
             continue
 
-        # Normalizar nombres columnas
         df = normalize_columns(df)
 
-        # Convertir listas/dict → cadenas en TODAS las columnas
         for col in df.columns:
             df[col] = df[col].apply(
                 lambda x: json.dumps(x, ensure_ascii=False)
@@ -147,25 +139,21 @@ def main():
                 else x
             )
 
-        # Limpieza
         df.drop_duplicates(inplace=True)
         df.dropna(how="all", axis=1, inplace=True)
 
-        # Metadatos internos
         df["fuente_archivo"] = filename
         df["fecha_proceso_utc"] = datetime.utcnow().isoformat()
         df["id_registro"] = df.apply(generate_unique_id, axis=1)
 
-        # Guardar
-        output_file = filename.replace(".", "_clean.")
-        output_path = os.path.join(PROCESSED_DIR, output_file)
+        clean_name = normalize_name(filename.replace(".", "_clean."))
+        output_path = os.path.join(PROCESSED_DIR, clean_name)
 
         df.to_csv(output_path, index=False, encoding="utf-8")
-
         print(f"[OK] Procesado y guardado: {output_path}")
 
         if MODE == "cloud":
-            upload_to_bucket(output_path, f"processed/{output_file}")
+            upload_to_bucket(output_path, f"processed/{clean_name}")
 
     print("\n========== TRANSFORMACIÓN COMPLETA ==========\n")
 
