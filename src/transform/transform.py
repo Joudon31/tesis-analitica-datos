@@ -11,6 +11,7 @@ MODE = config["mode"]
 
 RAW_DIR = "data/raw"
 PROCESSED_DIR = "data/processed"
+os.makedirs(RAW_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 
@@ -61,12 +62,34 @@ def load_file(path):
     print(f"[WARN] Formato no soportado: {path}")
     return None
 
+def download_all_raw_from_bucket():
+    """Descarga TODOS los archivos del bucket RAW hacia data/raw."""
+    bucket_name = config["gcp"]["bucket_raw"]
+    client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
+    bucket = client.bucket(bucket_name)
+
+    print(f"[INFO] Descargando archivos RAW desde GCP bucket: {bucket_name}")
+
+    blobs = bucket.list_blobs()
+
+    for blob in blobs:
+        dest_path = os.path.join(RAW_DIR, blob.name)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        blob.download_to_filename(dest_path)
+        print(f"[OK] Descargado: {blob.name} -> {dest_path}")
+
 
 # =============================
 # MAIN
 # =============================
 def main():
     print("\n========== INICIANDO TRANSFORMACIÓN ==========\n")
+    
+    # Descargar archivos RAW desde GCP al entorno local (GitHub Actions)
+    download_all_raw_from_bucket()
+
+    print("\n[INFO] Archivos disponibles en data/raw/:")
+    print(os.listdir(RAW_DIR))
 
     for filename in os.listdir(RAW_DIR):
         raw_path = os.path.join(RAW_DIR, filename)
