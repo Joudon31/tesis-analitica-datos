@@ -90,11 +90,23 @@ def download_processed_from_bucket():
 
     blobs = bucket.list_blobs()
 
+    found = False
+
     for blob in blobs:
-        dest_path = os.path.join(PROCESSED_DIR, blob.name)
+        found = True
+
+        # El transform subió archivos bajo "processed/"
+        blob_clean_name = blob.name.replace("processed/", "")
+
+        dest_path = os.path.join(PROCESSED_DIR, blob_clean_name)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
         blob.download_to_filename(dest_path)
         print(f"[OK] Descargado: {blob.name} -> {dest_path}")
+
+    if not found:
+        print("[WARN] No se encontraron archivos en el bucket PROCESSED")
+
 
 # ============================
 #  Pipeline LOAD
