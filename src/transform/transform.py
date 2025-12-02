@@ -15,15 +15,64 @@ os.makedirs(RAW_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 
-def normalize_name(name: str) -> str:
-    return (
-        name.lower()
-            .replace(" ", "_")
-            .replace("-", "_")
-            .replace("/", "_")
-            .replace(":", "_")
-            .replace("__", "_")
+# ============================================
+# DETECCIÓN SÓLIDA: JSON REAL vs CSV DISFRAZADO
+# ============================================
+def load_json_safe(path):
+    """
+    Intenta cargar JSON real.
+    Si no comienza con { o [, se analiza si el archivo es CSV disfrazado.
+    Retorna (df, tipo) donde tipo ∈ {"json", "csv", "unknown"}.
+    """
+
+    # Intento preliminar: leer texto completo
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read().strip()
+    except:
+        return None, "unknown"
+
+    # 1) JSON real comienza con { o [
+    if text.startswith("{") or text.startswith("["):
+        try:
+            data = json.loads(text)
+
+            if isinstance(data, dict) and "features" in data:
+                return pd.json_normalize(data["features"]), "json"
+
+            if isinstance(data, list):
+                return pd.json_normalize(data), "json"
+
+            return pd.json_normalize(data), "json"
+        except:
+            pass
+
+    # 2) Detectar CSV disfrazado (si la primera línea tiene muchas comas)
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            first_line = f.readline()
+
+        if first_line.count(",") > 2:
+            df = pd.read_csv(path, engine="python", on_bad_lines="skip")
+            return df, "csv"
+    except:
+        pass
+
+    return None, "unknown"
+
+
+# ============================================
+# HELPERS
+# ============================================
+def normalize_columns(df):
+    df.columns = (
+        df.columns.str.strip()
+                  .str.lower()
+                  .str.replace(" ", "_")
+                  .str.replace("-", "_")
+                  .str.replace("/", "_")
     )
+    return df
 
 
 def generate_unique_id(row):
@@ -31,107 +80,113 @@ def generate_unique_id(row):
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def load_json_safe(path):
-    """
-    Intenta cargar JSON real.
-    Si no es JSON válido (lista o dict), lo devuelve como texto.
-    """
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            data = json.load(f)
-
-        if isinstance(data, dict) and "features" in data:
-            return pd.json_normalize(data["features"]), "json"
-
-        if isinstance(data, list):
-            return pd.json_normalize(data), "json"
-
-        return pd.json_normalize(data), "json"
-
-    except Exception:
-        # No es JSON → probablemente CSV disfrazado
-        return None, "text"
+def upload_to_bucket(local_path, dest_name):
+    bucket_name = config["gcp"]["bucket_processed"]
+    client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(dest_name)
+    blob.upload_from_filename(local_path)
+    print(f"[GCP] Subido a gs://{bucket_name}/{dest_name}")
 
 
 def load_file(path):
     ext = path.split(".")[-1].lower()
 
+    # CSV → CSV normal
     if ext == "csv":
         try:
-            return pd.read_csv(path, encoding="latin-1"), "csv"
+            return pd.read_csv(path, encoding="latin-1", low_memory=False), "csv"
         except:
-            return pd.read_csv(path, sep=";", encoding="latin-1", engine="python"), "csv"
-
-    if ext in ["xlsx", "xls"]:
-        return pd.read_excel(path), "excel"
-
-    if ext == "json":
-        df, status = load_json_safe(path)
-        if status == "json":
-            return df, "json"
-        else:
-            # Tiene extensión JSON pero contenido CSV
             return pd.read_csv(path, engine="python", on_bad_lines="skip"), "csv"
 
+    # Excel
+    if ext in ["xlsx", "xls"]:
+        return pd.read_excel(path), "csv"
+
+    # JSON y pseudo-JSON
+    if ext == "json":
+        df, detected_type = load_json_safe(path)
+        return df, detected_type
+
+    print(f"[WARN] Formato no soportado: {path}")
     return None, "unknown"
 
 
-def upload_to_bucket(local_path, dest_name):
-    bucket_name = config["gcp"]["bucket_processed"]
-    client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
-    bucket = client.bucket(bucket_name)
-    bucket.blob(dest_name).upload_from_filename(local_path)
-    print(f"[UPLOAD] {local_path} → gs://{bucket_name}/{dest_name}")
-
-
-def main():
-    print("\n========== INICIANDO TRANSFORMACIÓN ==========\n")
-
-    # Descargar RAW
+def download_all_raw_from_bucket():
     bucket_name = config["gcp"]["bucket_raw"]
     client = storage.Client.from_service_account_json(config["gcp"]["credentials"])
     bucket = client.bucket(bucket_name)
 
+    print(f"[INFO] Descargando archivos RAW desde GCP bucket: {bucket_name}")
+
     for blob in bucket.list_blobs():
-        dest = os.path.join(RAW_DIR, blob.name)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        blob.download_to_filename(dest)
+        dest_path = os.path.join(RAW_DIR, blob.name)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        blob.download_to_filename(dest_path)
+        print(f"[OK] Descargado: {blob.name} -> {dest_path}")
+
+
+# ============================================
+# MAIN
+# ============================================
+def main():
+    print("\n========== INICIANDO TRANSFORMACIÓN ==========\n")
+
+    download_all_raw_from_bucket()
+
+    print("\n[INFO] Archivos encontrados en data/raw:")
+    print(os.listdir(RAW_DIR))
 
     for filename in os.listdir(RAW_DIR):
-
         raw_path = os.path.join(RAW_DIR, filename)
+        print(f"\n[INFO] Procesando: {filename}")
+
         df, ftype = load_file(raw_path)
 
-        if df is None:
-            print(f"[SKIP] No procesable: {filename}")
+        if df is None or ftype == "unknown":
+            print(f"[SKIP] No se pudo procesar: {filename}")
             continue
 
-        df.columns = [
-            normalize_name(c) for c in df.columns
-        ]
+        # Normalizar columnas
+        df = normalize_columns(df)
 
+        # Convertir listas/dict → strings
+        for col in df.columns:
+            df[col] = df[col].apply(
+                lambda x: json.dumps(x, ensure_ascii=False)
+                if isinstance(x, (list, dict))
+                else x
+            )
+
+        # Limpieza general
         df.drop_duplicates(inplace=True)
         df.dropna(how="all", axis=1, inplace=True)
 
+        # Metadatos
         df["fuente_archivo"] = filename
         df["fecha_proceso_utc"] = datetime.utcnow().isoformat()
         df["id_registro"] = df.apply(generate_unique_id, axis=1)
 
-        # Guardado consistente
-        if ftype == "csv":
-            clean_name = normalize_name(filename.replace(".", "_clean.")) + ".csv"
+        # Seleccionar extensión correcta
+        if ftype == "json":
+            out_ext = ".json"
         else:
-            clean_name = normalize_name(filename.replace(".", "_clean.")) + ".json"
+            out_ext = ".csv"
 
-        output_path = os.path.join(PROCESSED_DIR, clean_name)
+        output_file = filename.replace(".", "_clean") + out_ext
+        output_path = os.path.join(PROCESSED_DIR, output_file)
 
-        if ftype == "csv":
+        # Guardar archivo limpio
+        if out_ext == ".csv":
             df.to_csv(output_path, index=False, encoding="utf-8")
         else:
-            df.to_json(output_path, orient="records", lines=True, force_ascii=False)
+            df.to_json(output_path, orient="records", force_ascii=False)
 
+        print(f"[OK] Guardado transformado → {output_path}")
+
+        # Subir a bucket en modo cloud
         if MODE == "cloud":
-            upload_to_bucket(output_path, f"processed/{clean_name}")
+            upload_to_bucket(output_path, f"processed/{output_file}")
 
     print("\n========== TRANSFORMACIÓN COMPLETA ==========\n")
 
