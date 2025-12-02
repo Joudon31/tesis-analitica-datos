@@ -46,25 +46,55 @@ def upload_to_bucket(local_path, dest_name):
 def load_file(path):
     ext = path.split(".")[-1].lower()
 
+    # ======================
+    # CSV ROBUSTO
+    # ======================
     if ext == "csv":
-        return pd.read_csv(path, encoding="latin-1", low_memory=False)
+        try:
+            # Intento normal
+            return pd.read_csv(path, encoding="latin-1", low_memory=False)
+        except Exception:
+            try:
+                # Detectar delimitador
+                import csv
+                with open(path, "r", encoding="latin-1", errors="ignore") as f:
+                    dialect = csv.Sniffer().sniff(f.readline())
+                return pd.read_csv(
+                    path,
+                    encoding="latin-1",
+                    sep=dialect.delimiter,
+                    engine="python",
+                    on_bad_lines="skip"
+                )
+            except Exception:
+                # Último intento: cargar como texto plano separado por ;
+                return pd.read_csv(
+                    path,
+                    encoding="latin-1",
+                    sep=";",
+                    engine="python",
+                    on_bad_lines="skip"
+                )
 
+    # ======================
+    # EXCEL
+    # ======================
     if ext in ["xlsx", "xls"]:
         return pd.read_excel(path)
 
+    # ======================
+    # JSON (cualquier estructura)
+    # ======================
     if ext == "json":
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             data = json.load(f)
 
-        # Caso: USGS con "features"
         if isinstance(data, dict) and "features" in data:
             return pd.json_normalize(data["features"])
 
-        # Caso: JSON es lista (API sismos EC)
         if isinstance(data, list):
             return pd.json_normalize(data)
 
-        # Caso: JSON es dict normal
         return pd.json_normalize(data)
 
     print(f"[WARN] Formato no soportado: {path}")
