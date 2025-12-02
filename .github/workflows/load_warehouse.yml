@@ -1,0 +1,41 @@
+name: LOAD - Cargar a BigQuery
+
+on:
+  workflow_dispatch:    # Permite ejecutarlo manualmente
+  push:
+    branches:
+      - main
+    paths:
+      - "data/processed/**"   # Se ejecuta cuando existan nuevos archivos procesados
+
+jobs:
+  load-bigquery:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - name: 🔹 Checkout repo
+      uses: actions/checkout@v4
+
+    - name: 🔹 Instalar Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: 🔹 Instalar dependencias
+      run: |
+        pip install google-cloud-bigquery pandas pyarrow fastavro
+
+    - name: 🔹 Crear carpeta secrets
+      run: mkdir -p secrets
+
+    - name: 🔹 Cargar credenciales GCP
+      env:
+        GCP_KEY: ${{ secrets.GCP_SERVICE_KEY }}
+      run: |
+        echo "$GCP_KEY" > secrets/gcp_key.json
+
+    - name: 🔹 Ejecutar script LOAD
+      env:
+        GOOGLE_APPLICATION_CREDENTIALS: secrets/gcp_key.json
+      run: python src/load/load_to_bigquery.py

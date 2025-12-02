@@ -1,6 +1,16 @@
 mode: cloud #local   # local o cloud dependiendo del entorno en el q querramos trabajar 
 
 gcp:
+  project_id: "proyecto-datos-gub-2025" 
   bucket_raw: "tesis-raw-datos-joseph"
   bucket_processed: "tesis-processed-datos-joseph"
+  # Dataset donde caerán las tablas procesadas en BigQuery
+  dataset_id: "warehouse_tesis"
+  # Dataset alterno si luego quieres vistas o análisis
+  dataset_analytics: "tesis_analytics"
   credentials: "gcp-key.json"
+
+
+
+
+
