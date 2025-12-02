@@ -53,11 +53,11 @@ def upload_to_gcp(local_path, bucket_name):
     blob.upload_from_filename(local_path)
     print(f"[GCP] Subido a gs://{bucket_name}/{blob.name}")
 
-def guess_extension_from_url(url):
+def guess_extension_from_url(url, response=None):
     path = urlparse(url).path.lower()
     if path.endswith(".csv"):
         return "csv"
-    if path.endswith(".json"):
+    if path.endswith(".json") or (response and 'application/json' in response.headers.get('Content-Type', '')):
         return "json"
     return "bin"
 
@@ -70,7 +70,7 @@ def main():
             r = requests.get(url, timeout=60)
             r.raise_for_status()
 
-            ext = guess_extension_from_url(url)
+            ext = guess_extension_from_url(url, r)
             filename = f"{name}_{now}.{ext}"
             local_path = os.path.join(DATA_DIR, filename)
 
@@ -85,6 +85,11 @@ def main():
 
         except Exception as e:
             print(f"[ERROR] {e}")
+            
+            # Resumen de archivos descargados
+    print("\n[RESUMEN] Archivos descargados en data/raw/:")
+    for f in os.listdir(DATA_DIR):
+        print(f" - {f}")
 
 if __name__ == "__main__":
     main()
