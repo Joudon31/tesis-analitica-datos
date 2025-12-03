@@ -7,6 +7,10 @@ on:
       - main
     paths:
       - "data/processed/**"
+  workflow_run:
+    workflows: ["Transform Data (ETL-T)"]
+    types:
+      - completed
 
 jobs:
   load-bigquery:
@@ -34,10 +38,9 @@ jobs:
       run: |
         echo "$GCP_KEY" | base64 -d > gcp-key.json
 
-    - name: Run LOAD step (fix PYTHONPATH)
+    - name: Run LOAD step
       env:
         GOOGLE_APPLICATION_CREDENTIALS: gcp-key.json
         PYTHONPATH: "${{ github.workspace }}"
       run: |
-        echo "PYTHONPATH = $PYTHONPATH"
         python src/load/load_to_bigquery.py

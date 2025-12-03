@@ -10,7 +10,7 @@ on:
       - "data/raw/**"
       - ".github/workflows/transform.yml"
   workflow_run:
-    workflows: ["Extract Data (ETL-E)"]
+    workflows: ["Extract and Upload to GCP"]
     types:
       - completed
 
